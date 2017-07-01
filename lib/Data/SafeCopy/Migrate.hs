@@ -36,7 +36,7 @@ module Data.SafeCopy.Migrate
 where
 
 
-import BasePrelude hiding (Version)
+import BasePrelude hiding (Version, (&))
 import Data.Serialize (getWord8, putWord8, label)
 import Data.SafeCopy
 import qualified Data.SafeCopy.Internal as S
