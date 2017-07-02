@@ -51,7 +51,7 @@ import Language.Haskell.Meta (parseExp)
 import qualified Data.Map as M
 import Data.Map (Map)
 import Lens.Micro
-import Control.Monad.Extra
+import Control.Monad.Extra (whenM)
 import Data.Generics.Uniplate.Data (transform)
 import Data.List.Extra (stripSuffix)
 
@@ -180,7 +180,11 @@ changelog bareTyName (newVer, Past oldVer) changes = do
   -- First, 'reify' it. See documentation for 'reify' to understand why we
   -- use 'lookupValueName' here (if we just do @reify newTyName@, we might
   -- get the constructor instead).
+#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- do
+#else
+  TyConI (DataD _cxt _name _vars       cons _deriving) <- do
+#endif
     mbReallyTyName <- lookupTypeName (nameBase newTyName)
     case mbReallyTyName of
       Just reallyTyName -> reify reallyTyName
@@ -191,8 +195,10 @@ changelog bareTyName (newVer, Past oldVer) changes = do
     fail "changelog: can't yet work with types with context"
   unless (null _vars) $
     fail "changelog: can't yet work with types with variables"
+#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "changelog: can't yet work with types with kinds"
+#endif
   -- We assume that the type is a single-constructor record.
   con <- case cons of
     [x] -> return x
@@ -201,10 +207,9 @@ changelog bareTyName (newVer, Past oldVer) changes = do
   -- Check that the type is actually a record and that there are no strict
   -- fields (which we cannot handle yet); when done, make a list of fields
   -- that is easier to work with. We strip names to their bare form.
-  let normalBang = Bang NoSourceUnpackedness NoSourceStrictness
   (recName :: String, fields :: [(String, Type)]) <- case con of
     RecC cn fs
-      | all (== normalBang) (fs^..each._2) ->
+      | all (== _NotStrict) (fs^..each._2) ->
           return (mkBare cn, [(mkBare n, t) | (n,_,t) <- fs])
       | otherwise -> fail "changelog: can't work with strict/unpacked fields"
     _             -> fail "changelog: the type must be a record"
@@ -235,17 +240,19 @@ changelog bareTyName (newVer, Past oldVer) changes = do
   -- Then we construct the record constructor:
   --   FooRec_v3 { a_v3 :: String, b_v3 :: Bool }
   let oldRec = recC (mkOld recName)
-                    [varBangType (mkOld fName)
-                                 (bangType bangNotStrict fType)
+                    [_varStrictType (mkOld fName)
+                                    (_strictType _notStrict fType)
                     | (fName, fType) <- M.toList oldFields]
   -- And the data type:
   --   data Foo_v3 = FooRec_v3 {...}
   let oldTypeDecl = dataD (cxt [])      -- no context
                           oldTyName     -- name of old type
                           []            -- no variables
+#if MIN_VERSION_template_haskell(2,11,0)
                           Nothing       -- no explicit kind
+#endif
                           [oldRec]      -- one constructor
-                          (cxt [])      -- not deriving anything
+                          _noDeriving   -- not deriving anything
 
   -- Next we generate the migration instance. It has two inner declarations.
   -- First declaration – “type MigrateFrom Foo = Foo_v3”:
@@ -313,14 +320,20 @@ genVer
   -> Q [Dec]
 genVer tyName ver constructors = do
   -- Get information about the new version of the datatype
+#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
-  -- Let's do some checks first
+#else
+  TyConI (DataD _cxt _name _vars       cons _deriving) <- reify tyName
+#endif
+-- Let's do some checks first
   unless (null _cxt) $
     fail "genVer: can't yet work with types with context"
   unless (null _vars) $
     fail "genVer: can't yet work with types with variables"
+#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "genVer: can't yet work with types with kinds"
+#endif
 
   let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
 
@@ -335,8 +348,8 @@ genVer tyName ver constructors = do
 
   let customConstructor conName fields =
         recC (oldName (mkName conName))
-             [varBangType (oldName (mkName fName))
-                          (bangType bangNotStrict fType)
+             [_varStrictType (oldName (mkName fName))
+                             (_strictType _notStrict fType)
                | (fName, fType) <- fields]
 
   cons' <- for constructors $ \genCons ->
@@ -351,12 +364,14 @@ genVer tyName ver constructors = do
     (oldName tyName)
     -- no variables
     []
+#if MIN_VERSION_template_haskell(2,11,0)
     -- no explicit kind
     Nothing
+#endif
     -- constructors
     (map return cons')
     -- not deriving anything
-    (cxt [])
+    _noDeriving
   return [decl]
 
 -- | A type for migrating constructors from an old version of a sum datatype.
@@ -377,14 +392,20 @@ migrateVer
   -> Q Exp
 migrateVer tyName ver constructors = do
   -- Get information about the new version of the datatype
+#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
+#else
+  TyConI (DataD _cxt _name _vars       cons _deriving) <- reify tyName
+#endif
   -- Let's do some checks first
   unless (null _cxt) $
     fail "migrateVer: can't yet work with types with context"
   unless (null _vars) $
     fail "migrateVer: can't yet work with types with variables"
+#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "migrateVer: can't yet work with types with kinds"
+#endif
 
   let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
 
@@ -430,7 +451,7 @@ internalDeriveSafeCopySorted' versionId kindName tyName info =
 #if MIN_VERSION_template_haskell(2,11,0)
     TyConI (DataD context _name tyvars _kind cons _derivs)
 #else
-    TyConI (DataD context _name tyvars cons _derivs)
+    TyConI (DataD context _name tyvars       cons _derivs)
 #endif
       | length cons > 255 -> fail $ "Can't derive SafeCopy instance for: " ++ show tyName ++
                                     ". The datatype must have less than 256 constructors."
@@ -542,8 +563,38 @@ sortFields :: [VarStrictType] -> [VarStrictType]
 sortFields = sortOn (\(n, _, _) -> (length (nameBase n), nameBase n))
 
 ----------------------------------------------------------------------------
--- Utilities
+-- Compatibility
 ----------------------------------------------------------------------------
 
-bangNotStrict :: Q Bang
-bangNotStrict = bang noSourceUnpackedness noSourceStrictness
+#if MIN_VERSION_template_haskell(2,11,0)
+_NotStrict :: Bang
+_NotStrict = Bang NoSourceUnpackedness NoSourceStrictness
+
+_notStrict :: Q Bang
+_notStrict = bang noSourceUnpackedness noSourceStrictness
+
+_varStrictType :: Name -> BangTypeQ -> VarBangTypeQ
+_varStrictType = varBangType
+
+_strictType :: Q Bang -> TypeQ -> BangTypeQ
+_strictType = bangType
+
+_noDeriving :: CxtQ
+_noDeriving = cxt []
+#else
+
+_NotStrict :: Strict
+_NotStrict = NotStrict
+
+_notStrict :: Q Strict
+_notStrict = notStrict
+
+_varStrictType :: Name -> StrictTypeQ -> VarStrictTypeQ
+_varStrictType = varStrictType
+
+_strictType :: Q Strict -> TypeQ -> StrictTypeQ
+_strictType = strictType
+
+_noDeriving :: [Name]
+_noDeriving = []
+#endif
