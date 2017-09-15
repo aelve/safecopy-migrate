@@ -221,8 +221,8 @@ changelog bareTyName (newVer, Past oldVer) changes = do
              (show (mkNew n)) (show newTyName)
   for_ (M.keys removed) $ \n ->
     when (n `elem` map fst fields) $ fail $
-      printf "changelog: field %s is present in %s \
-             \but was supposed to be removed"
+      printf "changelog: field %s is present in %s\
+             \ but was supposed to be removed"
              (show (mkNew n)) (show newTyName)
 
   -- -----------------------------------------------------------------------
