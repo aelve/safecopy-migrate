@@ -2,7 +2,8 @@ name:                safecopy-migrate
 version:             0.2.0
 synopsis:            Making SafeCopy migrations easier
 description:
-  Making SafeCopy migrations easier
+  A sort of a creepy language for describing @SafeCopy@ migrations
+  and having types derived from them automatically.
 homepage:            http://github.com/aelve/safecopy-migrate
 bug-reports:         http://github.com/aelve/safecopy-migrate/issues
 license:             PublicDomain
