@@ -1,15 +1,9 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-
--- Hack for bug in older Cabal versions
-#ifndef MIN_VERSION_template_haskell
-#define MIN_VERSION_template_haskell(x,y,z) 1
-#endif
 
 
 -- | This is a mess, sorry. This code was extracted from another project.
@@ -42,11 +36,8 @@ import Data.SafeCopy
 import qualified Data.SafeCopy.Internal as S
 import Language.Haskell.TH.Syntax as TH
 import Language.Haskell.TH.Quote
-#if MIN_VERSION_template_haskell(2,8,0)
 import Language.Haskell.TH hiding (Kind)
-#else
-import Language.Haskell.TH hiding (Kind(..))
-#endif
+import Language.Haskell.TH.Datatype
 import Language.Haskell.Meta (parseExp)
 import qualified Data.Map as M
 import Data.Map (Map)
@@ -180,11 +171,7 @@ changelog bareTyName (newVer, Past oldVer) changes = do
   -- First, 'reify' it. See documentation for 'reify' to understand why we
   -- use 'lookupValueName' here (if we just do @reify newTyName@, we might
   -- get the constructor instead).
-#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- do
-#else
-  TyConI (DataD _cxt _name _vars       cons _deriving) <- do
-#endif
     mbReallyTyName <- lookupTypeName (nameBase newTyName)
     case mbReallyTyName of
       Just reallyTyName -> reify reallyTyName
@@ -195,10 +182,8 @@ changelog bareTyName (newVer, Past oldVer) changes = do
     fail "changelog: can't yet work with types with context"
   unless (null _vars) $
     fail "changelog: can't yet work with types with variables"
-#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "changelog: can't yet work with types with kinds"
-#endif
   -- We assume that the type is a single-constructor record.
   con <- case cons of
     [x] -> return x
@@ -240,19 +225,16 @@ changelog bareTyName (newVer, Past oldVer) changes = do
   -- Then we construct the record constructor:
   --   FooRec_v3 { a_v3 :: String, b_v3 :: Bool }
   let oldRec = recC (mkOld recName)
-                    [_varStrictType (mkOld fName)
-                                    (_strictType _notStrict fType)
+                    [varBangType (mkOld fName)
+                                 (bangType _notStrict fType)
                     | (fName, fType) <- M.toList oldFields]
   -- And the data type:
   --   data Foo_v3 = FooRec_v3 {...}
-  let oldTypeDecl = dataD (cxt [])      -- no context
-                          oldTyName     -- name of old type
-                          []            -- no variables
-#if MIN_VERSION_template_haskell(2,11,0)
-                          Nothing       -- no explicit kind
-#endif
-                          [oldRec]      -- one constructor
-                          _noDeriving   -- not deriving anything
+  let oldTypeDecl = dataDCompat (cxt [])      -- no context
+                                oldTyName     -- name of old type
+                                []            -- no variables
+                                [oldRec]      -- one constructor
+                                []            -- not deriving anything
 
   -- Next we generate the migration instance. It has two inner declarations.
   -- First declaration – “type MigrateFrom Foo = Foo_v3”:
@@ -320,20 +302,14 @@ genVer
   -> Q [Dec]
 genVer tyName ver constructors = do
   -- Get information about the new version of the datatype
-#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
-#else
-  TyConI (DataD _cxt _name _vars       cons _deriving) <- reify tyName
-#endif
--- Let's do some checks first
+  -- Let's do some checks first
   unless (null _cxt) $
     fail "genVer: can't yet work with types with context"
   unless (null _vars) $
     fail "genVer: can't yet work with types with variables"
-#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "genVer: can't yet work with types with kinds"
-#endif
 
   let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
 
@@ -348,8 +324,8 @@ genVer tyName ver constructors = do
 
   let customConstructor conName fields =
         recC (oldName (mkName conName))
-             [_varStrictType (oldName (mkName fName))
-                             (_strictType _notStrict fType)
+             [varBangType (oldName (mkName fName))
+                          (bangType _notStrict fType)
                | (fName, fType) <- fields]
 
   cons' <- for constructors $ \genCons ->
@@ -357,21 +333,17 @@ genVer tyName ver constructors = do
       Copy conName -> copyConstructor conName
       Custom conName fields -> customConstructor conName fields
 
-  decl <- dataD
+  decl <- dataDCompat
     -- no context
     (cxt [])
     -- name of our type (e.g. SomeType_v3 if the previous version was 3)
     (oldName tyName)
     -- no variables
     []
-#if MIN_VERSION_template_haskell(2,11,0)
-    -- no explicit kind
-    Nothing
-#endif
     -- constructors
     (map return cons')
     -- not deriving anything
-    _noDeriving
+    []
   return [decl]
 
 -- | A type for migrating constructors from an old version of a sum datatype.
@@ -392,20 +364,14 @@ migrateVer
   -> Q Exp
 migrateVer tyName ver constructors = do
   -- Get information about the new version of the datatype
-#if MIN_VERSION_template_haskell(2,11,0)
   TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
-#else
-  TyConI (DataD _cxt _name _vars       cons _deriving) <- reify tyName
-#endif
   -- Let's do some checks first
   unless (null _cxt) $
     fail "migrateVer: can't yet work with types with context"
   unless (null _vars) $
     fail "migrateVer: can't yet work with types with variables"
-#if MIN_VERSION_template_haskell(2,11,0)
   unless (isNothing _kind) $
     fail "migrateVer: can't yet work with types with kinds"
-#endif
 
   let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
 
@@ -448,37 +414,21 @@ internalDeriveSafeCopySorted versionId kindName tyName = do
 internalDeriveSafeCopySorted' :: Version a -> Name -> Name -> Info -> Q [Dec]
 internalDeriveSafeCopySorted' versionId kindName tyName info =
   case info of
-#if MIN_VERSION_template_haskell(2,11,0)
     TyConI (DataD context _name tyvars _kind cons _derivs)
-#else
-    TyConI (DataD context _name tyvars       cons _derivs)
-#endif
       | length cons > 255 -> fail $ "Can't derive SafeCopy instance for: " ++ show tyName ++
                                     ". The datatype must have less than 256 constructors."
       | otherwise         -> worker context tyvars (zip [0..] cons)
 
-#if MIN_VERSION_template_haskell(2,11,0)
     TyConI (NewtypeD context _name tyvars _kind con _derivs) ->
-#else
-    TyConI (NewtypeD context _name tyvars con _derivs) ->
-#endif
       worker context tyvars [(0, con)]
 
     FamilyI _ insts -> do
       decs <- forM insts $ \inst ->
         case inst of
-#if MIN_VERSION_template_haskell(2,11,0)
           DataInstD context _name ty _kind cons _derivs ->
-#else
-          DataInstD context _name ty cons _derivs ->
-#endif
               worker' (foldl appT (conT tyName) (map return ty)) context [] (zip [0..] cons)
 
-#if MIN_VERSION_template_haskell(2,11,0)
           NewtypeInstD context _name ty _kind con _derivs ->
-#else
-          NewtypeInstD context _name ty con _derivs ->
-#endif
               worker' (foldl appT (conT tyName) (map return ty)) context [] [(0, con)]
           _ -> fail $ "Can't derive SafeCopy instance for: " ++ show (tyName, inst)
       return $ concat decs
@@ -487,11 +437,7 @@ internalDeriveSafeCopySorted' versionId kindName tyName info =
     worker = worker' (conT tyName)
     worker' tyBase context tyvars cons =
       let ty = foldl appT tyBase [ varT $ S.tyVarName var | var <- tyvars ]
-#if MIN_VERSION_template_haskell(2,10,0)
           safeCopyClass args = foldl appT (conT ''SafeCopy) args
-#else
-          safeCopyClass args = classP ''SafeCopy args
-#endif
       in (:[]) <$> instanceD (cxt $ [safeCopyClass [varT $ S.tyVarName var] | var <- tyvars] ++ map return context)
                                        (conT ''SafeCopy `appT` ty)
                                        [ mkPutCopySorted cons
@@ -553,48 +499,21 @@ mkGetCopySorted tyName cons =
                     , show (length cons)
                     , " constructors. Maybe your data is corrupted?" ]
 
-sortFields :: [VarStrictType] -> [VarStrictType]
 -- We sort by length and then lexicographically, so that relative ordering
 -- would be preserved when version suffix is added – otherwise these fields
 -- would be sorted in different order after adding a suffix:
 --
 -- foo         fooBar_v3
 -- fooBar      foo_v3
+sortFields :: [VarStrictType] -> [VarStrictType]
 sortFields = sortOn (\(n, _, _) -> (length (nameBase n), nameBase n))
 
 ----------------------------------------------------------------------------
 -- Compatibility
 ----------------------------------------------------------------------------
 
-#if MIN_VERSION_template_haskell(2,11,0)
 _NotStrict :: Bang
 _NotStrict = Bang NoSourceUnpackedness NoSourceStrictness
 
 _notStrict :: Q Bang
 _notStrict = bang noSourceUnpackedness noSourceStrictness
-
-_varStrictType :: Name -> BangTypeQ -> VarBangTypeQ
-_varStrictType = varBangType
-
-_strictType :: Q Bang -> TypeQ -> BangTypeQ
-_strictType = bangType
-
-_noDeriving :: CxtQ
-_noDeriving = cxt []
-#else
-
-_NotStrict :: Strict
-_NotStrict = NotStrict
-
-_notStrict :: Q Strict
-_notStrict = notStrict
-
-_varStrictType :: Name -> StrictTypeQ -> VarStrictTypeQ
-_varStrictType = varStrictType
-
-_strictType :: Q Strict -> TypeQ -> StrictTypeQ
-_strictType = strictType
-
-_noDeriving :: [Name]
-_noDeriving = []
-#endif

@@ -1,5 +1,5 @@
 name:                safecopy-migrate
-version:             0.1.0.0
+version:             0.2.0
 synopsis:            Making SafeCopy migrations easier
 description:
   Making SafeCopy migrations easier
@@ -9,7 +9,7 @@ license:             PublicDomain
 author:              Artyom
 maintainer:          yom@artyom.me
 category:            Data
-tested-with:         GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.1
+tested-with:         GHC == 8.0.2, GHC == 8.2.2, GHC == 8.4.3
 build-type:          Simple
 extra-source-files:  CHANGELOG.md
 cabal-version:       >=1.10
@@ -30,7 +30,8 @@ library
                        haskell-src-meta,
                        microlens,
                        safecopy,
-                       template-haskell,
+                       template-haskell >= 2.11,
+                       th-abstraction,
                        uniplate
   ghc-options:         -Wall -fno-warn-unused-do-bind
   hs-source-dirs:      lib
