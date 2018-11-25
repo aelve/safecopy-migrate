@@ -1,2 +1,8 @@
 resolver: lts-11.13
-packages: ['.']
+
+packages:
+- .
+
+extra-deps:
+- git: https://github.com/neongreen/superrecord
+  commit: 78693a1c03a6115eb22dc9db497f34e43ba7d2f3

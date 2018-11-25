@@ -1,5 +1,5 @@
 name:                safecopy-migrate
-version:             0.2.0
+version:             1.0.0
 synopsis:            Making SafeCopy migrations easier
 description:
   A sort of a creepy language for describing @SafeCopy@ migrations
@@ -21,8 +21,9 @@ source-repository head
 
 library
   exposed-modules:     Data.SafeCopy.Migrate
-  -- other-modules:       
-  -- other-extensions:    
+                       Data.SafeCopy.MigrateNew
+  -- other-modules:
+  -- other-extensions:
   build-depends:       base >=4.7 && <5,
                        base-prelude,
                        cereal,
@@ -31,6 +32,7 @@ library
                        haskell-src-meta,
                        microlens,
                        safecopy,
+                       superrecord,
                        template-haskell >= 2.11,
                        th-abstraction,
                        uniplate
