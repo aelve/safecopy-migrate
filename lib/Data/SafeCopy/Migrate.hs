@@ -3,13 +3,11 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
 
 -- | This is a mess, sorry. This code was extracted from another project.
---
--- Currently 'changelog' is the most useful function here – see its
--- description for an example.
 module Data.SafeCopy.Migrate
 (
   -- * Migration for records
@@ -66,7 +64,7 @@ data Change
   -- the final version of the record is)
   | Added String Exp
 
--- | An ADT for versions. Only used in invocations of 'changelog'.
+-- | An ADT for versions.
 data TypeVersion = Current Int | Past Int
   deriving (Show)
 
@@ -124,27 +122,8 @@ changelog _ (_newVer, Current _) _ =
   -- instead of 'TypeVersion' but that would lead to worse-looking changelogs
   fail "changelog: old version can't be 'Current'"
 changelog bareTyName (newVer, Past oldVer) changes = do
-  -- ------------------------------------------------------------------------
-  -- Name and version business
-  -- ------------------------------------------------------------------------
-  -- First, we can define functions for removing a new-version prefix and for
-  -- adding a new/old-version prefix to a bare name. We'll be working with
-  -- bare names everywhere.
-  let mkBare :: Name -> String
-      mkBare n = case newVer of
-        Current _ -> nameBase n
-        Past v ->
-          let suff = ("_v" ++ show v)
-          in case stripSuffix suff (nameBase n) of
-               Just n' -> n'
-               Nothing -> error $
-                 printf "changelog: %s doesn't have suffix %s"
-                        (show n) (show suff)
-  let mkOld, mkNew :: String -> Name
-      mkOld n = mkName (n ++ "_v" ++ show oldVer)
-      mkNew n = case newVer of
-        Current _ -> mkName n
-        Past v -> mkName (n ++ "_v" ++ show v)
+  let ?newVer = newVer
+      ?oldVer = oldVer
   -- We know the “base” name (tyName) of the type and we know the
   -- versions. From this we can get actual new/old names:
   let newTyName = mkNew (nameBase bareTyName)
@@ -287,22 +266,36 @@ hs = QuasiQuoter {
 -- | A type for specifying what constructors existed in an old version of a
 -- sum datatype.
 data GenConstructor
-  = Copy Name                         -- ^ Just reuse the constructor
-                                      --   existing now.
+  = Copy String                       -- ^ Just reuse the constructor
   | Custom String [(String, Q Type)]  -- ^ The previous version had a
-                                      --   constructor with such-and-such
-                                      --   name and such-and-such fields.
+                                      --   constructor with given name and
+                                      --   fields
 
 -- | Generate an old version of a sum type (used for 'SafeCopy').
 genVer
-  :: Name                  -- ^ Name of type to generate old version for
-  -> Int                   -- ^ Version to generate
-  -> [GenConstructor]      -- ^ List of constructors in the version we're
-                           --   generating
+  :: Name                       -- ^ Name of type to generate old version for
+  -> (TypeVersion, TypeVersion) -- ^ New version, old version
+  -> [GenConstructor]           -- ^ List of constructors in the version we're
+                                --   generating
   -> Q [Dec]
-genVer tyName ver constructors = do
+genVer _ (_newVer, Current _) _ =
+  fail "genVer: old version can't be 'Current'"
+genVer bareTyName (newVer, Past oldVer) constructors = do
+  let ?newVer = newVer
+      ?oldVer = oldVer
+  -- We know the “base” name (tyName) of the type and we know the
+  -- versions. From this we can get actual new/old names:
+  let newTyName = mkNew (nameBase bareTyName)
+  let oldTyName = mkOld (nameBase bareTyName)
+  -- We should also check that the new version exists and that the old one
+  -- doesn't.
+  whenM (isNothing <$> lookupTypeName (nameBase newTyName)) $
+    fail (printf "genVer: %s not found" (show newTyName))
+  whenM (isJust <$> lookupTypeName (nameBase oldTyName)) $
+    fail (printf "genVer: %s is already present" (show oldTyName))
+
   -- Get information about the new version of the datatype
-  TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
+  TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify newTyName
   -- Let's do some checks first
   unless (null _cxt) $
     fail "genVer: can't yet work with types with context"
@@ -311,20 +304,18 @@ genVer tyName ver constructors = do
   unless (isNothing _kind) $
     fail "genVer: can't yet work with types with kinds"
 
-  let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
-
   let copyConstructor conName =
-        case [c | c@(RecC n _) <- cons, n == conName] of
+        case [c | c@(RecC n _) <- cons, nameBase n == nameBase (mkNew conName)] of
           [] -> fail ("genVer: couldn't find a record constructor " ++
-                      show conName)
+                      show (mkNew conName) ++ " in " ++ show newTyName)
           [RecC _ fields] ->
-            recC (oldName conName)
-                 (map return (fields & each._1 %~ oldName))
+            recC (mkOld conName)
+                 (map return (fields & each._1 %~ (mkOld . mkBare)))
           other -> fail ("genVer: copyConstructor: got " ++ show other)
 
   let customConstructor conName fields =
-        recC (oldName (mkName conName))
-             [varBangType (oldName (mkName fName))
+        recC (mkOld conName)
+             [varBangType (mkOld fName)
                           (bangType _notStrict fType)
                | (fName, fType) <- fields]
 
@@ -337,7 +328,7 @@ genVer tyName ver constructors = do
     -- no context
     (cxt [])
     -- name of our type (e.g. SomeType_v3 if the previous version was 3)
-    (oldName tyName)
+    oldTyName
     -- no variables
     []
     -- constructors
@@ -348,23 +339,36 @@ genVer tyName ver constructors = do
 
 -- | A type for migrating constructors from an old version of a sum datatype.
 data MigrateConstructor
-  = CopyM Name             -- ^ Copy constructor without changes
-  | CustomM String ExpQ    -- ^ The old constructor with such-and-such name
-                           --   should be turned into a value of the new type
-                           --   (i.e. type of current version) using
-                           --   such-and-such code.
+  = CopyM String           -- ^ Copy constructor without changes
+  | CustomM String ExpQ    -- ^ The old constructor with given name should
+                           --   be turned into a value of the new type (i.e.
+                           --   type of current version) using given code
 
 -- | Generate 'SafeCopy' migration code for a sum datatype.
 migrateVer
-  :: Name                  -- ^ Type we're migrating to
-  -> Int                   -- ^ Version we're migrating from
-  -> [MigrateConstructor]  -- ^ For each constructor existing in the (old
-                           --   version of) type, a specification of how to
-                           --   migrate it.
+  :: Name                        -- ^ Type we're migrating to
+  -> (TypeVersion, TypeVersion)  -- ^ New version, old version
+  -> [MigrateConstructor]        -- ^ For each constructor existing in the
+                                 --   (old version of) type, a specification
+                                 --   of how to migrate it.
   -> Q Exp
-migrateVer tyName ver constructors = do
+migrateVer _ (_newVer, Current _) _ =
+  fail "migrateVer: old version can't be 'Current'"
+migrateVer bareTyName (newVer, Past oldVer) constructors = do
+  let ?newVer = newVer
+      ?oldVer = oldVer
+  -- We know the “base” name (tyName) of the type and we know the
+  -- versions. From this we can get actual new/old names:
+  let newTyName = mkNew (nameBase bareTyName)
+  let oldTyName = mkOld (nameBase bareTyName)
+  -- We should also check that both versions exist
+  whenM (isNothing <$> lookupTypeName (nameBase newTyName)) $
+    fail (printf "migrateVer: %s not found" (show newTyName))
+  whenM (isNothing <$> lookupTypeName (nameBase oldTyName)) $
+    fail (printf "migrateVer: %s not found" (show oldTyName))
+
   -- Get information about the new version of the datatype
-  TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify tyName
+  TyConI (DataD _cxt _name _vars _kind cons _deriving) <- reify newTyName
   -- Let's do some checks first
   unless (null _cxt) $
     fail "migrateVer: can't yet work with types with context"
@@ -373,24 +377,22 @@ migrateVer tyName ver constructors = do
   unless (isNothing _kind) $
     fail "migrateVer: can't yet work with types with kinds"
 
-  let oldName n = mkName (nameBase n ++ "_v" ++ show ver)
-
   arg <- newName "x"
 
   let copyConstructor conName =
-        case [c | c@(RecC n _) <- cons, n == conName] of
+        case [c | c@(RecC n _) <- cons, nameBase n == nameBase (mkNew conName)] of
           [] -> fail ("migrateVer: couldn't find a record constructor " ++
-                      show conName)
+                      show (mkNew conName) ++ " in " ++ show newTyName)
           [RecC _ fields] -> do
-            -- SomeConstr_v3{} -> SomeConstr (field1 x) (field2 x) ...
-            let getField f = varE (oldName (f ^. _1)) `appE` varE arg
-            match (recP (oldName conName) [])
-                  (normalB (appsE (conE conName : map getField fields)))
+            -- SomeConstr_v3{} -> SomeConstr (field1_v3 x) (field2_v3 x) ...
+            let getField f = varE (mkOld (mkBare (f ^. _1))) `appE` varE arg
+            match (recP (mkOld conName) [])
+                  (normalB (appsE (conE (mkNew conName) : map getField fields)))
                   []
           other -> fail ("migrateVer: copyConstructor: got " ++ show other)
 
   let customConstructor conName res =
-        match (recP (oldName (mkName conName)) [])
+        match (recP (mkOld conName) [])
               (normalB (res `appE` varE arg))
               []
 
@@ -400,6 +402,30 @@ migrateVer tyName ver constructors = do
       CustomM conName res -> customConstructor conName res
 
   lam1E (varP arg) (caseE (varE arg) (map return branches'))
+
+----------------------------------------------------------------------------
+-- Name and version business
+----------------------------------------------------------------------------
+
+-- | Remove a new-version prefix.
+mkBare :: (?newVer :: TypeVersion) => Name -> String
+mkBare n = case ?newVer of
+  Current _ -> nameBase n
+  Past v ->
+    let suff = ("_v" ++ show v)
+    in case stripSuffix suff (nameBase n) of
+         Just n' -> n'
+         Nothing -> error $
+           printf "mkBare: %s doesn't have suffix %s"
+                  (show n) (show suff)
+
+mkOld :: (?oldVer :: Int) => String -> Name
+mkOld n = mkName (n ++ "_v" ++ show ?oldVer)
+
+mkNew :: (?newVer :: TypeVersion) => String -> Name
+mkNew n = case ?newVer of
+  Current _ -> mkName n
+  Past v -> mkName (n ++ "_v" ++ show v)
 
 ----------------------------------------------------------------------------
 -- Internal stuff
